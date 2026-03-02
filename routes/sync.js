@@ -110,25 +110,97 @@ router.post('/sync', async (req, res) => {
       if (payload.dueDate && typeof payload.dueDate === 'number') payload.dueDate = new Date(payload.dueDate);
 
       // 3. STRICT LWW CONFLICT DETECTION
+      // if (operationType === 'UPDATE') {
+      //   const existingDoc = await db.collection(collectionName).findOne({ _id: entityId });
+        
+      //   // If Server is newer than Client -> SERVER WINS
+      //   if (existingDoc && existingDoc.updatedAt > payload.updatedAt) {
+      //     console.log(`⚠️ Conflict Detected on ${entityId}. Server Wins.`);
+      //     conflicts.push({
+      //       queueId: queueId,
+      //       entityType: collectionName,
+      //       serverData: existingDoc // Return the server data as required by spec!
+      //     });
+      //     continue; // Skip adding to bulkOps, we reject the client's update
+      //   }
+        
+      //   // If Client is newer or equal -> CLIENT WINS
+      //   bulkOps[collectionName].push({
+      //     updateOne: { filter: { _id: entityId }, update: { $set: payload }, upsert: true }
+      //   });
+      // } 
+
+
+
+
+
+      // // 3. STRICT LWW CONFLICT DETECTION
+      // if (operationType === 'UPDATE') {
+      //   const existingDoc = await db.collection(collectionName).findOne({ _id: entityId });
+        
+      //   // Check if the server's timestamp is newer AND the client didn't force an override
+      //   const isClientOlder = existingDoc && existingDoc.updatedAt > payload.updatedAt;
+      //   const isNotForced = payload.forceOverride !== true;
+
+      //   // If Server is newer than Client AND it's not a forced override -> SERVER WINS
+      //   if (isClientOlder && isNotForced) {
+      //     console.log(`⚠️ Conflict Detected on ${entityId}. Server Wins.`);
+      //     conflicts.push({
+      //       queueId: queueId,
+      //       entityType: collectionName,
+      //       serverData: existingDoc // Return the server data as required by spec!
+      //     });
+      //     continue; // Skip adding to bulkOps, we reject the client's update
+      //   }
+        
+      //   // CLEANUP: Remove the forceOverride flag so it doesn't pollute your MongoDB documents
+      //   if (payload.forceOverride !== undefined) {
+      //       delete payload.forceOverride;
+      //   }
+
+      //   // If Client is newer, equal, OR forced -> CLIENT WINS
+      //   bulkOps[collectionName].push({
+      //     updateOne: { filter: { _id: entityId }, update: { $set: payload }, upsert: true }
+      //   });
+      // }
+
+
+    // 3. STRICT LWW CONFLICT DETECTION
       if (operationType === 'UPDATE') {
         const existingDoc = await db.collection(collectionName).findOne({ _id: entityId });
         
-        // If Server is newer than Client -> SERVER WINS
-        if (existingDoc && existingDoc.updatedAt > payload.updatedAt) {
+        let isClientOlder = false;
+        if (existingDoc && existingDoc.updatedAt && payload.updatedAt) {
+          // THE FIX: Convert both to raw milliseconds to prevent String vs. Date comparison bugs!
+          const serverTime = new Date(existingDoc.updatedAt).getTime();
+          const clientTime = new Date(payload.updatedAt).getTime();
+          isClientOlder = serverTime > clientTime;
+        }
+        
+        const isNotForced = payload.forceOverride !== true;
+
+        // If Server is newer than Client AND it's not a forced override -> SERVER WINS
+        if (isClientOlder && isNotForced) {
           console.log(`⚠️ Conflict Detected on ${entityId}. Server Wins.`);
           conflicts.push({
             queueId: queueId,
             entityType: collectionName,
-            serverData: existingDoc // Return the server data as required by spec!
+            serverData: existingDoc
           });
-          continue; // Skip adding to bulkOps, we reject the client's update
+          continue; // Skip adding to bulkOps, reject the client's update
         }
         
-        // If Client is newer or equal -> CLIENT WINS
+        // CLEANUP: Remove the forceOverride flag so it doesn't pollute MongoDB
+        if (payload.forceOverride !== undefined) {
+            delete payload.forceOverride;
+        }
+
+        // If Client is newer, equal, OR forced -> CLIENT WINS
         bulkOps[collectionName].push({
           updateOne: { filter: { _id: entityId }, update: { $set: payload }, upsert: true }
         });
-      } 
+      }
+
       else if (operationType === 'INSERT') {
         bulkOps[collectionName].push({ insertOne: { document: { _id: entityId, ...payload } } });
       } 
